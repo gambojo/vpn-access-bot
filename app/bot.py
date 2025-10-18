@@ -4,7 +4,7 @@ import os
 import uuid
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from telegram.constants import ParseMode
 from py3xui import Api, Client
 
@@ -129,11 +129,47 @@ def generate_client_email(telegram_id, username):
     return email.lower()
 
 
+def get_all_inbounds(api):
+    """Получение всех инбаундов"""
+    try:
+        # Используем правильный метод из py3xui
+        inbounds = api.inbound.get_list()
+        logger.info(f"📡 Найдено инбаундов: {len(inbounds)}")
+        for inbound in inbounds:
+            logger.info(f"  - ID: {inbound.id}, Имя: {inbound.remark}, Порт: {inbound.port}")
+        return inbounds
+    except Exception as e:
+        logger.error(f"❌ Ошибка получения инбаундов: {e}")
+        return []
+
+
+def get_inbound_by_id(api, inbound_id):
+    """Получение конкретного инбаунда по ID"""
+    try:
+        # Используем правильный метод из py3xui
+        inbound = api.inbound.get_by_id(inbound_id)
+        if inbound:
+            logger.info(f"✅ Найден инбаунд: {inbound.remark} (ID: {inbound.id})")
+            return inbound
+        else:
+            logger.error(f"❌ Инбаунд с ID {inbound_id} не найден")
+            return None
+    except Exception as e:
+        logger.error(f"❌ Ошибка поиска инбаунда: {e}")
+        return None
+
+
 def create_xui_client(telegram_id, username, full_name, data_limit_gb=10):
     """Создание клиента в 3x-ui"""
     try:
         api = login_to_xui()
         if not api:
+            return None
+
+        # Проверяем существование инбаунда
+        inbound = get_inbound_by_id(api, INBOUND_ID)
+        if not inbound:
+            logger.error(f"❌ Инбаунд с ID {INBOUND_ID} не найден")
             return None
 
         # Генерируем уникальный ID для клиента
@@ -156,6 +192,7 @@ def create_xui_client(telegram_id, username, full_name, data_limit_gb=10):
         )
 
         # Добавляем клиента в инбаунд
+        logger.info(f"🔄 Добавляем клиента в инбаунд {INBOUND_ID}")
         result = api.client.add(INBOUND_ID, [client_config])
 
         if result:
@@ -194,8 +231,7 @@ def test_xui_connection():
     try:
         api = login_to_xui()
         if api:
-            # Пробуем получить список инбаундов
-            inbounds = api.inbound.get()
+            inbounds = get_all_inbounds(api)
             if inbounds:
                 logger.info("✅ Подключение к 3x-ui успешно")
                 return True
@@ -213,19 +249,19 @@ def get_existing_client(telegram_id):
             return None
 
         # Получаем информацию об инбаунде
-        inbound = api.inbound.get(INBOUND_ID)
+        inbound = get_inbound_by_id(api, INBOUND_ID)
         if not inbound:
             return None
 
-        # Ищем клиента с matching tgId
-        settings = inbound.get('settings', {})
-        clients = settings.get('clients', [])
+        # Ищем клиента с matching tgId в settings инбаунда
+        clients = inbound.settings.clients
 
         for client in clients:
-            if client.get('tgId') == str(telegram_id):
-                client_id = client.get('id')
+            if client.tgId == str(telegram_id):
+                client_id = client.id
                 subscription_url = generate_subscription_url(client_id)
-                email = client.get('email', 'Не указан')
+                email = client.email
+                logger.info(f"✅ Найден существующий клиент для Telegram ID {telegram_id}")
                 return {
                     'client_id': client_id,
                     'subscription_url': subscription_url,
@@ -233,6 +269,7 @@ def get_existing_client(telegram_id):
                     'existing': True
                 }
 
+        logger.info(f"ℹ️ Существующий клиент для Telegram ID {telegram_id} не найден")
         return None
 
     except Exception as e:
@@ -286,7 +323,7 @@ async def register_user(query, context):
     """Регистрация пользователя через Telegram OAuth"""
     user = query.from_user
 
-    # Проверяем, не зарегистрирован ли уже пользователь
+    # Проверяем, не зарегистрирован ли уже пользователь в нашей базе
     existing_user = get_user(user.id)
 
     if existing_user:
@@ -307,14 +344,16 @@ async def register_user(query, context):
         parse_mode=ParseMode.MARKDOWN
     )
 
-    # Сначала проверяем, нет ли существующего клиента
+    # Сначала проверяем, нет ли существующего клиента в 3x-ui
     existing_client = get_existing_client(user.id)
 
     if existing_client:
         # Используем существующего клиента
         client_result = existing_client
+        logger.info(f"🔄 Используем существующего клиента для пользователя {user.id}")
     else:
         # Создаем нового клиента
+        logger.info(f"🆕 Создаем нового клиента для пользователя {user.id}")
         client_result = create_xui_client(
             user.id,
             user.username,
