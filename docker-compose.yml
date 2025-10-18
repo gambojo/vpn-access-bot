@@ -19,7 +19,7 @@ services:
       - xui-panel
 
   xui-panel:
-    image: enwaiax/3x-ui:latest
+    image: ghcr.io/mhsanaei/3x-ui:latest
     container_name: xui-panel
     restart: unless-stopped
     ports:

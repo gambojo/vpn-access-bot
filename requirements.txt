@@ -3,3 +3,6 @@ telegram
 pathlib
 python-telegram-bot
 python-dotenv
+py3xui
+httpx
+pydantic
