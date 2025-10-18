@@ -17,7 +17,7 @@ XUI_PASSWORD = os.getenv('XUI_PASSWORD')
 INBOUND_ID = int(os.getenv('INBOUND_ID', '1'))
 DATA_LIMIT_GB = int(os.getenv('DATA_LIMIT_GB', '10'))
 BOT_USERNAME = os.getenv('BOT_USERNAME')
-DEFAULT_PORT = int(os.getenv('DEFAULT_PORT', '443'))
+DEFAULT_PORT = int(os.getenv('DEFAULT_PORT', '5622'))
 
 # Проверка обязательных переменных
 if not all([BOT_TOKEN, XUI_PANEL_URL, XUI_USERNAME, XUI_PASSWORD]):
