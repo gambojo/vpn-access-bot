@@ -1,6 +1,5 @@
-sqlite3
 requests
 telegram
 pathlib
-os
-re
+python-telegram-bot
+python-dotenv
