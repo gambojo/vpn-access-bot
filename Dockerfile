@@ -2,9 +2,20 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# Установка зависимостей
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ./app ./app
+# Копирование кода
+COPY bot.py .
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Создание папки для данных
+RUN mkdir -p /app/data
+
+# Создание непривилегированного пользователя
+RUN groupadd -r bot && useradd -r -g bot bot
+RUN chown -R bot:bot /app
+USER bot
+
+# Запуск бота
+CMD ["python", "bot.py"]
