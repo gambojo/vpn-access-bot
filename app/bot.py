@@ -6,7 +6,8 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from telegram.constants import ParseMode
-from py3xui import Api, Client, Inbound, Settings, StreamSettings, Sniffing
+from py3xui import Api, Client
+from py3xui.inbound import Inbound, Settings, StreamSettings, Sniffing
 
 # Настройки из переменных окружения
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -267,13 +268,10 @@ def create_xui_client(telegram_id, username, full_name, data_limit_gb=10):
         client_config = Client(
             id=client_id,
             email=email,
-            flow="xtls-rprx-vision",
             enable=True,
             limitIp=0,
             totalGB=data_limit_gb * 1073741824,  # Конвертация в байты
-            expiryTime=0,
-            tgId=str(telegram_id),
-            subId=""
+            expiryTime=0
         )
 
         # Добавляем клиента в инбаунд
@@ -339,20 +337,14 @@ def get_existing_client(telegram_id):
         inbounds = get_all_inbounds(api)
 
         for inbound in inbounds:
-            # Ищем клиента с matching tgId в settings инбаунда
+            # Ищем клиента по email (так как tgId может не поддерживаться)
             clients = inbound.settings.clients
 
             for client in clients:
-                # Проверяем наличие атрибута tgId разными способами
-                tg_id = None
-                if hasattr(client, 'tgId'):
-                    tg_id = client.tgId
-                elif hasattr(client, 'tg_id'):
-                    tg_id = client.tg_id
-                elif hasattr(client, 'telegram_id'):
-                    tg_id = client.telegram_id
-
-                if tg_id and str(tg_id) == str(telegram_id):
+                # Ищем по email, так как в этой версии API может не быть tgId
+                # Email генерируется на основе Telegram данных
+                expected_email_prefix = f"user{telegram_id}" if not telegram_id else f"{telegram_id}"
+                if client.email and expected_email_prefix in client.email:
                     client_id = client.id
                     subscription_url = generate_subscription_url(client_id, inbound.id)
                     email = client.email
@@ -379,7 +371,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /start"""
     user = update.effective_user
 
-    # Приветственное сообщение с кнопкой регистрации
     keyboard = [
         [InlineKeyboardButton("🚀 Начать использовать VPN", callback_data="register")],
         [InlineKeyboardButton("📊 Мой статус", callback_data="status")],
@@ -423,7 +414,7 @@ async def register_user(query, context):
     existing_user = get_user(user.id)
 
     if existing_user:
-        subscription_url = existing_user[5]  # subscription_url в 6-й колонке
+        subscription_url = existing_user[5]
         await query.edit_message_text(
             f"✅ **Вы уже зарегистрированы!**\n\n"
             f"🔗 **Ваша ссылка для подключения:**\n"
