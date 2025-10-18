@@ -3,18 +3,19 @@ import sqlite3
 import requests
 import os
 import re
+import json
 from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
 # Настройки из переменных окружения
 BOT_TOKEN = os.getenv('BOT_TOKEN')
-XUI_PANEL_URL = os.getenv('XUI_PANEL_URL')  # Пример: https://vpn.example.com:54321
-XUI_USERNAME = os.getenv('XUI_USERNAME')  # Логин от 3x-ui панели
-XUI_PASSWORD = os.getenv('XUI_PASSWORD')  # Пароль от 3x-ui панели
-INBOUND_ID = os.getenv('INBOUND_ID', '1')
+XUI_PANEL_URL = os.getenv('XUI_PANEL_URL')
+XUI_USERNAME = os.getenv('XUI_USERNAME')
+XUI_PASSWORD = os.getenv('XUI_PASSWORD')
+INBOUND_ID = os.getenv('INBOUND_ID', '1')  # ID существующего инбаунда
 DATA_LIMIT_GB = int(os.getenv('DATA_LIMIT_GB', '10'))
-BOT_USERNAME = os.getenv('BOT_USERNAME')  # @username бота без @
+BOT_USERNAME = os.getenv('BOT_USERNAME')
 
 # Проверка обязательных переменных
 if not all([BOT_TOKEN, XUI_PANEL_URL, XUI_USERNAME, XUI_PASSWORD]):
@@ -107,9 +108,7 @@ class XUIManager:
         self.username = username
         self.password = password
         self.session = requests.Session()
-        # Отключаем проверку SSL для самоподписанных сертификатов (осторожно!)
         self.session.verify = False
-        # Игнорировать предупреждения о SSL
         import urllib3
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -126,81 +125,81 @@ class XUIManager:
             response = self.session.post(
                 f"{self.panel_url}/login",
                 data=login_data,
-                timeout=30,
-                verify=False
+                timeout=30
             )
 
             if response.status_code == 200:
-                logger.info("Успешная авторизация в 3x-ui")
+                logger.info("✅ Успешная авторизация в 3x-ui")
                 return True
             else:
-                logger.error(f"Ошибка авторизации: {response.status_code} - {response.text}")
+                logger.error(f"❌ Ошибка авторизации: {response.status_code}")
                 return False
 
         except Exception as e:
-            logger.error(f"Ошибка при авторизации: {e}")
+            logger.error(f"❌ Ошибка при авторизации: {e}")
             return False
 
     def get_inbounds(self):
-        """Получение списка инбаундов"""
+        """Получение списка всех инбаундов"""
         try:
             response = self.session.get(
                 f"{self.panel_url}/panel/api/inbounds/list",
-                timeout=30,
-                verify=False
+                timeout=30
             )
             if response.status_code == 200:
-                return response.json().get('data', [])
+                data = response.json()
+                inbounds = data.get('data', [])
+                logger.info(f"📡 Найдено инбаундов: {len(inbounds)}")
+                for inbound in inbounds:
+                    logger.info(
+                        f"  - ID: {inbound.get('id')}, Имя: {inbound.get('remark')}, Порт: {inbound.get('port')}")
+                return inbounds
             else:
-                logger.error(f"Ошибка получения инбаундов: {response.status_code}")
+                logger.error(f"❌ Ошибка получения инбаундов: {response.status_code}")
                 return []
         except Exception as e:
-            logger.error(f"Ошибка при получении инбаундов: {e}")
+            logger.error(f"❌ Ошибка при получении инбаундов: {e}")
             return []
 
+    def get_inbound_by_id(self, inbound_id):
+        """Получение конкретного инбаунда по ID"""
+        inbounds = self.get_inbounds()
+        for inbound in inbounds:
+            if str(inbound.get('id')) == str(inbound_id):
+                logger.info(f"✅ Найден инбаунд: {inbound.get('remark')} (ID: {inbound.get('id')})")
+                return inbound
+        logger.error(f"❌ Инбаунд с ID {inbound_id} не найден")
+        return None
+
     def create_client(self, email, telegram_id, inbound_id, data_limit_gb=10):
-        """Создание клиента в 3x-ui"""
+        """Создание клиента в существующем инбаунде"""
         if not self.login():
-            logger.error("Не удалось авторизоваться в 3x-ui")
+            return None
+
+        # Получаем целевой инбаунд
+        target_inbound = self.get_inbound_by_id(inbound_id)
+        if not target_inbound:
+            logger.error(f"❌ Не удалось найти инбаунд с ID {inbound_id}")
             return None
 
         try:
-            # Получаем список инбаундов
-            inbounds = self.get_inbounds()
-            if not inbounds:
-                logger.error("Нет доступных инбаундов")
-                return None
-
-            # Ищем нужный инбаунд
-            target_inbound = None
-            for inbound in inbounds:
-                if str(inbound.get('id')) == str(inbound_id):
-                    target_inbound = inbound
-                    break
-
-            if not target_inbound:
-                logger.error(f"Инбаунд с ID {inbound_id} не найден. Доступные: {[i.get('id') for i in inbounds]}")
-                return None
-
-            logger.info(f"Найден инбаунд: {target_inbound.get('remark')} (ID: {target_inbound.get('id')})")
-
             # Парсим настройки инбаунда
             settings = target_inbound.get('settings', '{}')
             if isinstance(settings, str):
-                import json
                 settings = json.loads(settings)
 
             clients = settings.get('clients', [])
+            logger.info(f"👥 Текущее количество клиентов в инбаунде: {len(clients)}")
 
             # Проверяем, нет ли уже клиента с таким Telegram ID
             for client in clients:
                 if client.get('tgId') == str(telegram_id):
-                    logger.info(f"Клиент для Telegram ID {telegram_id} уже существует")
-                    # Возвращаем существующего клиента
+                    logger.info(f"✅ Клиент для Telegram ID {telegram_id} уже существует")
                     subscription_url = self.generate_subscription_url(target_inbound, client['id'])
                     return {
                         'client_id': client['id'],
-                        'subscription_url': subscription_url
+                        'subscription_url': subscription_url,
+                        'existing': True
                     }
 
             # Создаем нового клиента
@@ -210,7 +209,7 @@ class XUIManager:
                 "enable": True,
                 "flow": "xtls-rprx-vision",
                 "limitIp": 0,
-                "totalGB": data_limit_gb * 1024 * 1024 * 1024,  # Конвертация в байты
+                "totalGB": data_limit_gb * 1073741824,  # Конвертация в байты (1GB = 1073741824 bytes)
                 "expiryTime": 0,
                 "tgId": str(telegram_id),
                 "subId": ""
@@ -219,47 +218,52 @@ class XUIManager:
             clients.append(new_client)
             settings['clients'] = clients
 
-            # Подготавливаем данные для обновления
+            # Подготавливаем данные для обновления инбаунда
             update_data = {
-                "id": target_inbound['id'],
-                "settings": settings,
-                "streamSettings": target_inbound.get('streamSettings'),
-                "sniffing": target_inbound.get('sniffing'),
-                "tag": target_inbound.get('tag'),
-                "protocol": target_inbound.get('protocol'),
-                "port": target_inbound.get('port'),
-                "listen": target_inbound.get('listen'),
-                "remark": target_inbound.get('remark')
+                "up": target_inbound.get('up', 0),
+                "down": target_inbound.get('down', 0),
+                "total": target_inbound.get('total', 0),
+                "remark": target_inbound.get('remark', ''),
+                "enable": target_inbound.get('enable', True),
+                "expiryTime": target_inbound.get('expiryTime', 0),
+                "listen": target_inbound.get('listen', ''),
+                "port": target_inbound.get('port', 0),
+                "protocol": target_inbound.get('protocol', ''),
+                "settings": json.dumps(settings),
+                "streamSettings": json.dumps(target_inbound.get('streamSettings', {})),
+                "sniffing": json.dumps(target_inbound.get('sniffing', {})),
+                "tag": target_inbound.get('tag', '')
             }
 
-            # Обновляем инбаунд
+            # Обновляем инбаунд с новым клиентом
+            logger.info(f"🔄 Добавляем нового клиента в инбаунд {target_inbound.get('remark')}")
             update_response = self.session.post(
                 f"{self.panel_url}/panel/api/inbounds/update/{target_inbound['id']}",
-                json=update_data,
-                timeout=30,
-                verify=False
+                data=update_data,
+                timeout=30
             )
 
             if update_response.status_code == 200:
                 result = update_response.json()
                 if result.get('success'):
-                    logger.info(f"Клиент создан: {email} (ID: {new_client['id']})")
+                    logger.info(f"✅ Клиент создан: {email} (ID: {new_client['id']})")
 
                     # Генерируем ссылку для подписки
                     subscription_url = self.generate_subscription_url(target_inbound, new_client['id'])
                     return {
                         'client_id': new_client['id'],
-                        'subscription_url': subscription_url
+                        'subscription_url': subscription_url,
+                        'existing': False
                     }
                 else:
-                    logger.error(f"Ошибка от 3x-ui: {result.get('msg')}")
+                    logger.error(f"❌ Ошибка от 3x-ui: {result.get('msg')}")
             else:
-                logger.error(f"HTTP ошибка: {update_response.status_code} - {update_response.text}")
+                logger.error(f"❌ HTTP ошибка: {update_response.status_code} - {update_response.text}")
 
             return None
 
         except Exception as e:
-            logger.error(f"Ошибка при создании клиента: {e}")
+            logger.error(f"❌ Ошибка при создании клиента: {e}")
             return None
 
     def generate_client_id(self):
@@ -271,18 +275,27 @@ class XUIManager:
         """Генерация ссылки для подписки"""
         try:
             # Формируем ссылку для подписки
-            # Стандартный формат для 3x-ui
             base_url = self.panel_url
             subscription_path = f"/sub/{inbound['id']}/{client_id}"
-
             subscription_url = f"{base_url}{subscription_path}"
 
-            logger.info(f"Сгенерирована ссылка: {subscription_url}")
+            logger.info(f"🔗 Сгенерирована ссылка: {subscription_url}")
             return subscription_url
 
         except Exception as e:
-            logger.error(f"Ошибка генерации ссылки: {e}")
+            logger.error(f"❌ Ошибка генерации ссылки: {e}")
             return f"{self.panel_url}/sub/{client_id}"
+
+    def test_connection(self):
+        """Тестирование подключения к 3x-ui"""
+        logger.info("🧪 Тестирование подключения к 3x-ui...")
+        if self.login():
+            inbounds = self.get_inbounds()
+            if inbounds:
+                logger.info("✅ Подключение к 3x-ui успешно")
+                return True
+        logger.error("❌ Не удалось подключиться к 3x-ui")
+        return False
 
 
 # Инициализация менеджеров
@@ -367,7 +380,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data['awaiting_email'] = False
             return
 
-        # Создаем клиента в 3x-ui
+        # Создаем клиента в существующем инбаунде
         await update.message.reply_text("⏳ **Создаем ваш VPN аккаунт...**\n\nПожалуйста, подождите ⏰")
 
         client_result = xui_manager.create_client(email, user.id, INBOUND_ID, DATA_LIMIT_GB)
@@ -384,8 +397,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
 
             if success:
+                if client_result.get('existing', False):
+                    message = "🔄 Найден существующий аккаунт!"
+                else:
+                    message = "🎉 **Регистрация успешна!**"
+
                 await update.message.reply_text(
-                    f"🎉 **Регистрация успешна!**\n\n"
+                    f"{message}\n\n"
                     f"👤 **Пользователь:** {user.full_name}\n"
                     f"📧 **Email:** {email}\n"
                     f"📊 **Лимит трафика:** {DATA_LIMIT_GB} GB\n\n"
@@ -410,7 +428,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Возможные причины:\n"
                 "• Панель 3x-ui недоступна\n"
                 "• Неправильные логин/пароль\n"
-                "• Закончились свободные слоты\n"
+                "• Инбаунд не найден\n"
                 "• Технические работы\n\n"
                 "Попробуйте позже или обратитесь к администратору."
             )
@@ -473,21 +491,14 @@ async def help_command(query, context):
     await query.edit_message_text(help_text, parse_mode='Markdown')
 
 
-async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_data = db_manager.get_user(user.id)
+async def test_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда для тестирования подключения к 3x-ui (только для админов)"""
+    await update.message.reply_text("🧪 Тестируем подключение к 3x-ui...")
 
-    if user_data:
-        subscription_url = user_data[6]
-        await update.message.reply_text(
-            f"🔗 **Ваша ссылка для подключения:**\n`{subscription_url}`\n\n"
-            f"Используйте /start для полной информации о аккаунте.",
-            parse_mode='Markdown'
-        )
+    if xui_manager.test_connection():
+        await update.message.reply_text("✅ Подключение к 3x-ui успешно!")
     else:
-        await update.message.reply_text(
-            "❌ Вы не зарегистрированы! Используйте /start для регистрации."
-        )
+        await update.message.reply_text("❌ Не удалось подключиться к 3x-ui")
 
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -496,11 +507,16 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     """Основная функция запуска бота"""
-    logger.info("Запуск VPN Telegram бота...")
-    logger.info(f"3x-ui панель: {XUI_PANEL_URL}")
-    logger.info(f"Лимит данных: {DATA_LIMIT_GB} GB")
-    logger.info(f"Inbound ID: {INBOUND_ID}")
-    logger.info(f"База данных: {DB_NAME}")
+    logger.info("🚀 Запуск VPN Telegram бота...")
+    logger.info(f"🔗 3x-ui панель: {XUI_PANEL_URL}")
+    logger.info(f"📊 Лимит данных: {DATA_LIMIT_GB} GB")
+    logger.info(f"🎯 Inbound ID: {INBOUND_ID}")
+    logger.info(f"💾 База данных: {DB_NAME}")
+
+    # Тестируем подключение при запуске
+    logger.info("🧪 Тестируем подключение к 3x-ui...")
+    if not xui_manager.test_connection():
+        logger.warning("⚠️ Не удалось подключиться к 3x-ui при запуске")
 
     # Создание приложения
     application = Application.builder().token(BOT_TOKEN).build()
@@ -509,12 +525,13 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("status", status_command))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("test", test_command))  # Для тестирования
     application.add_handler(CallbackQueryHandler(button_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_error_handler(error_handler)
 
     # Запуск бота
-    logger.info("Бот запущен и готов к работе!")
+    logger.info("✅ Бот запущен и готов к работе!")
     application.run_polling()
 
 
