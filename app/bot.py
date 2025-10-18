@@ -6,7 +6,7 @@ from pathlib import Path
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from telegram.constants import ParseMode
-from py3xui import Api, Client
+from py3xui import Api, Client, Inbound, Settings, StreamSettings, Sniffing
 
 # Настройки из переменных окружения
 BOT_TOKEN = os.getenv('BOT_TOKEN')
@@ -16,6 +16,7 @@ XUI_PASSWORD = os.getenv('XUI_PASSWORD')
 INBOUND_ID = int(os.getenv('INBOUND_ID', '1'))
 DATA_LIMIT_GB = int(os.getenv('DATA_LIMIT_GB', '10'))
 BOT_USERNAME = os.getenv('BOT_USERNAME')
+DEFAULT_PORT = int(os.getenv('DEFAULT_PORT', '443'))
 
 # Проверка обязательных переменных
 if not all([BOT_TOKEN, XUI_PANEL_URL, XUI_USERNAME, XUI_PASSWORD]):
@@ -132,7 +133,6 @@ def generate_client_email(telegram_id, username):
 def get_all_inbounds(api):
     """Получение всех инбаундов"""
     try:
-        # Используем правильный метод из py3xui
         inbounds = api.inbound.get_list()
         logger.info(f"📡 Найдено инбаундов: {len(inbounds)}")
         for inbound in inbounds:
@@ -146,16 +146,101 @@ def get_all_inbounds(api):
 def get_inbound_by_id(api, inbound_id):
     """Получение конкретного инбаунда по ID"""
     try:
-        # Используем правильный метод из py3xui
         inbound = api.inbound.get_by_id(inbound_id)
         if inbound:
             logger.info(f"✅ Найден инбаунд: {inbound.remark} (ID: {inbound.id})")
             return inbound
         else:
-            logger.error(f"❌ Инбаунд с ID {inbound_id} не найден")
+            logger.warning(f"⚠️ Инбаунд с ID {inbound_id} не найден")
             return None
     except Exception as e:
-        logger.error(f"❌ Ошибка поиска инбаунда: {e}")
+        logger.warning(f"⚠️ Инбаунд с ID {inbound_id} не найден: {e}")
+        return None
+
+
+def create_default_inbound(api, port=443):
+    """Создание инбаунда по умолчанию если он не существует"""
+    try:
+        logger.info(f"🔄 Создаем инбаунд по умолчанию на порту {port}...")
+
+        # Настройки инбаунда
+        settings = Settings(clients=[])
+
+        # Настройки потоков
+        stream_settings = StreamSettings(
+            network="tcp",
+            security="none",
+            tcp_settings={
+                "header": {
+                    "type": "none"
+                }
+            }
+        )
+
+        # Настройки sniffing
+        sniffing = Sniffing(
+            enabled=True,
+            destOverride=["http", "tls"]
+        )
+
+        # Создаем инбаунд
+        inbound = Inbound(
+            remark=f"Telegram Bot Users - Port {port}",
+            port=port,
+            listen="",
+            protocol="vless",
+            settings=settings,
+            stream_settings=stream_settings,
+            sniffing=sniffing,
+            enable=True,
+            tag=f"inbound-{port}"
+        )
+
+        # Добавляем инбаунд
+        result = api.inbound.add(inbound)
+
+        if result:
+            # Получаем ID созданного инбаунда
+            inbounds = get_all_inbounds(api)
+            for inv in inbounds:
+                if inv.port == port and inv.remark == inbound.remark:
+                    logger.info(f"✅ Инбаунд создан успешно! ID: {inv.id}")
+                    return inv.id
+
+        logger.error("❌ Не удалось создать инбаунд")
+        return None
+
+    except Exception as e:
+        logger.error(f"❌ Ошибка создания инбаунда: {e}")
+        return None
+
+
+def ensure_inbound_exists(api, inbound_id, port=443):
+    """Проверяет существование инбаунда и создает его если нужно"""
+    # Пытаемся найти инбаунд по ID
+    inbound = get_inbound_by_id(api, inbound_id)
+
+    if inbound:
+        logger.info(f"✅ Инбаунд {inbound_id} существует: {inbound.remark}")
+        return inbound_id
+
+    # Если инбаунд не найден по ID, ищем по порту
+    logger.info(f"🔍 Ищем инбаунд на порту {port}...")
+    inbounds = get_all_inbounds(api)
+    for inv in inbounds:
+        if inv.port == port:
+            logger.info(f"✅ Найден инбаунд на порту {port}: ID {inv.id}")
+            return inv.id
+
+    # Если инбаунд не найден, создаем новый
+    logger.warning(f"⚠️ Инбаунд не найден. Создаем новый на порту {port}...")
+    new_inbound_id = create_default_inbound(api, port)
+
+    if new_inbound_id:
+        logger.info(f"✅ Новый инбаунд создан с ID: {new_inbound_id}")
+        return new_inbound_id
+    else:
+        logger.error("❌ Не удалось создать инбаунд")
         return None
 
 
@@ -166,10 +251,10 @@ def create_xui_client(telegram_id, username, full_name, data_limit_gb=10):
         if not api:
             return None
 
-        # Проверяем существование инбаунда
-        inbound = get_inbound_by_id(api, INBOUND_ID)
-        if not inbound:
-            logger.error(f"❌ Инбаунд с ID {INBOUND_ID} не найден")
+        # Проверяем и создаем инбаунд если нужно
+        actual_inbound_id = ensure_inbound_exists(api, INBOUND_ID, DEFAULT_PORT)
+        if not actual_inbound_id:
+            logger.error("❌ Не удалось найти или создать инбаунд")
             return None
 
         # Генерируем уникальный ID для клиента
@@ -192,17 +277,18 @@ def create_xui_client(telegram_id, username, full_name, data_limit_gb=10):
         )
 
         # Добавляем клиента в инбаунд
-        logger.info(f"🔄 Добавляем клиента в инбаунд {INBOUND_ID}")
-        result = api.client.add(INBOUND_ID, [client_config])
+        logger.info(f"🔄 Добавляем клиента в инбаунд {actual_inbound_id}")
+        result = api.client.add(actual_inbound_id, [client_config])
 
         if result:
             # Генерируем ссылку для подписки
-            subscription_url = generate_subscription_url(client_id)
+            subscription_url = generate_subscription_url(client_id, actual_inbound_id)
             logger.info(f"✅ Клиент создан: {email} (ID: {client_id})")
             return {
                 'client_id': client_id,
                 'subscription_url': subscription_url,
                 'email': email,
+                'inbound_id': actual_inbound_id,
                 'success': True
             }
         else:
@@ -214,11 +300,12 @@ def create_xui_client(telegram_id, username, full_name, data_limit_gb=10):
         return None
 
 
-def generate_subscription_url(client_id):
+def generate_subscription_url(client_id, inbound_id=None):
     """Генерация ссылки для подписки"""
     try:
+        actual_inbound_id = inbound_id or INBOUND_ID
         base_url = XUI_PANEL_URL.rstrip('/')
-        subscription_url = f"{base_url}/sub/{INBOUND_ID}/{client_id}"
+        subscription_url = f"{base_url}/sub/{actual_inbound_id}/{client_id}"
         logger.info(f"🔗 Сгенерирована ссылка: {subscription_url}")
         return subscription_url
     except Exception as e:
@@ -248,26 +335,35 @@ def get_existing_client(telegram_id):
         if not api:
             return None
 
-        # Получаем информацию об инбаунде
-        inbound = get_inbound_by_id(api, INBOUND_ID)
-        if not inbound:
-            return None
+        # Получаем все инбаунды и ищем клиента
+        inbounds = get_all_inbounds(api)
 
-        # Ищем клиента с matching tgId в settings инбаунда
-        clients = inbound.settings.clients
+        for inbound in inbounds:
+            # Ищем клиента с matching tgId в settings инбаунда
+            clients = inbound.settings.clients
 
-        for client in clients:
-            if client.tgId == str(telegram_id):
-                client_id = client.id
-                subscription_url = generate_subscription_url(client_id)
-                email = client.email
-                logger.info(f"✅ Найден существующий клиент для Telegram ID {telegram_id}")
-                return {
-                    'client_id': client_id,
-                    'subscription_url': subscription_url,
-                    'email': email,
-                    'existing': True
-                }
+            for client in clients:
+                # Проверяем наличие атрибута tgId разными способами
+                tg_id = None
+                if hasattr(client, 'tgId'):
+                    tg_id = client.tgId
+                elif hasattr(client, 'tg_id'):
+                    tg_id = client.tg_id
+                elif hasattr(client, 'telegram_id'):
+                    tg_id = client.telegram_id
+
+                if tg_id and str(tg_id) == str(telegram_id):
+                    client_id = client.id
+                    subscription_url = generate_subscription_url(client_id, inbound.id)
+                    email = client.email
+                    logger.info(f"✅ Найден существующий клиент для Telegram ID {telegram_id} в инбаунде {inbound.id}")
+                    return {
+                        'client_id': client_id,
+                        'subscription_url': subscription_url,
+                        'email': email,
+                        'inbound_id': inbound.id,
+                        'existing': True
+                    }
 
         logger.info(f"ℹ️ Существующий клиент для Telegram ID {telegram_id} не найден")
         return None
@@ -361,7 +457,7 @@ async def register_user(query, context):
             DATA_LIMIT_GB
         )
 
-    if client_result and client_result.get('client_id'):
+    if client_result and client_result.get('success'):
         # Сохраняем пользователя в базу
         success = add_user(
             user.id,
@@ -412,7 +508,7 @@ async def register_user(query, context):
             "Возможные причины:\n"
             "• Панель 3x-ui недоступна\n"
             "• Неправильные логин/пароль администратора\n"
-            "• Инбаунд не найден\n"
+            "• Не удалось создать инбаунд\n"
             "• Технические работы\n\n"
             "Попробуйте позже или обратитесь к администратору.",
             parse_mode=ParseMode.MARKDOWN
@@ -545,6 +641,7 @@ def main():
     logger.info(f"🔗 3x-ui панель: {XUI_PANEL_URL}")
     logger.info(f"📊 Лимит данных: {DATA_LIMIT_GB} GB")
     logger.info(f"🎯 Inbound ID: {INBOUND_ID}")
+    logger.info(f"🔌 Порт по умолчанию: {DEFAULT_PORT}")
     logger.info(f"💾 База данных: {DB_NAME}")
 
     # Инициализация базы данных
