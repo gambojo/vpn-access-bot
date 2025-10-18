@@ -1,10 +1,6 @@
 fastapi
 uvicorn
-python-telegram-bot
 sqlalchemy
+asyncpg
 psycopg2-binary
-requests
-apscheduler
-jinja2
-python-dotenv
-auth
+pydantic
