@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   vpn-bot:
     build: .
@@ -13,8 +11,39 @@ services:
       - XUI_PANEL_URL=${XUI_PANEL_URL}
       - XUI_USERNAME=${XUI_USERNAME}
       - XUI_PASSWORD=${XUI_PASSWORD}
-      - INBOUND_ID=${INBOUND_ID}
-      - DATA_LIMIT_GB=${DATA_LIMIT_GB}
+      - INBOUND_ID=${INBOUND_ID:-1}
+      - DATA_LIMIT_GB=${DATA_LIMIT_GB:-10}
+    networks:
+      - vpn-network
+    depends_on:
+      - xui-panel
+
+  xui-panel:
+    image: enwaiax/3x-ui:latest
+    container_name: xui-panel
+    restart: unless-stopped
+    ports:
+      - "54321:54321"
+      - "443:443"
+      - "80:80"
+      - "8080:8080"
+    volumes:
+      - xui-data:/etc/x-ui
+      - xui-certificates:/root/cert
+    environment:
+      - XUI_USERNAME=${XUI_USERNAME:-admin}
+      - XUI_PASSWORD=${XUI_PASSWORD:-admin}
+    networks:
+      - vpn-network
+
+networks:
+  vpn-network:
+    driver: bridge
 
 volumes:
   bot-data:
+    driver: local
+  xui-data:
+    driver: local
+  xui-certificates:
+    driver: local
